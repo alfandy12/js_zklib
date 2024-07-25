@@ -43,68 +43,75 @@ module.exports = class {
      * @param {Buffer} reply
      */
     const handleOnData = reply => {
+
+      try {
+        switch (state) {
+          case States.FIRST_PACKET:
+            state = States.PACKET;
+  
+            reply = this.connectionType === ConnectionTypes.UDP ? reply : removeTcpHeader(reply);
+  
+            if (reply && reply.length) {
+              const cmd = reply.readUInt16LE(0);
+  
+              if (cmd == Commands.ACK_ERROR) {
+                internalCallback(new Error('ack error'));
+                return;
+              }
+  
+              total_bytes = reply.readUInt32LE(8) - 4;
+              total_bytes += 2;
+  
+              if (total_bytes <= 0) {
+                internalCallback(new Error('zero'));
+                return;
+              }
+  
+              if (reply.length > 16) {
+                handleOnData(reply.slice(16));
+              }
+            } else {
+              internalCallback(new Error('zero length reply'));
+              return;
+            }
+  
+            break;
+  
+          case States.PACKET:
+            if (attendancesBuffer.length == 0) {
+              reply = this.connectionType === ConnectionTypes.UDP ? reply : removeTcpHeader(reply);
+              reply = reply.slice(TRIM_FIRST);
+            } else {
+              reply = reply.slice(TRIM_NEXT);
+            }
+  
+            reply = removeHeadersInMiddle(reply);
+  
+            attendancesBuffer = Buffer.concat([attendancesBuffer, reply]);
+  
+            // TODO: if sizes are not the same we should throw an error. rigth know if they not match it simple hangs
+  
+            if (attendancesBuffer.length === total_bytes) {
+              const atts = [];
+  
+              for (let i = 0; i < attendancesBuffer.length - 2; i += ATTDATA_SIZE) {
+                const att = this.decodeAttendanceData(attendancesBuffer.slice(i, i + ATTDATA_SIZE));
+                atts.push(att);
+              }
+  
+              internalCallback(null, atts);
+              return;
+            }
+  
+            break;
+        }
+      } catch (err) {
+        console.error('Error handling data:', err);
+        internalCallback(err);
+      }
       // console.log(reply.toString('hex'));
 
-      switch (state) {
-        case States.FIRST_PACKET:
-          state = States.PACKET;
-
-          reply = this.connectionType === ConnectionTypes.UDP ? reply : removeTcpHeader(reply);
-
-          if (reply && reply.length) {
-            const cmd = reply.readUInt16LE(0);
-
-            if (cmd == Commands.ACK_ERROR) {
-              internalCallback(new Error('ack error'));
-              return;
-            }
-
-            total_bytes = reply.readUInt32LE(8) - 4;
-            total_bytes += 2;
-
-            if (total_bytes <= 0) {
-              internalCallback(new Error('zero'));
-              return;
-            }
-
-            if (reply.length > 16) {
-              handleOnData(reply.slice(16));
-            }
-          } else {
-            internalCallback(new Error('zero length reply'));
-            return;
-          }
-
-          break;
-
-        case States.PACKET:
-          if (attendancesBuffer.length == 0) {
-            reply = this.connectionType === ConnectionTypes.UDP ? reply : removeTcpHeader(reply);
-            reply = reply.slice(TRIM_FIRST);
-          } else {
-            reply = reply.slice(TRIM_NEXT);
-          }
-
-          reply = removeHeadersInMiddle(reply);
-
-          attendancesBuffer = Buffer.concat([attendancesBuffer, reply]);
-
-          // TODO: if sizes are not the same we should throw an error. rigth know if they not match it simple hangs
-
-          if (attendancesBuffer.length === total_bytes) {
-            const atts = [];
-
-            for (let i = 0; i < attendancesBuffer.length - 2; i += ATTDATA_SIZE) {
-              const att = this.decodeAttendanceData(attendancesBuffer.slice(i, i + ATTDATA_SIZE));
-              atts.push(att);
-            }
-
-            internalCallback(null, atts);
-            return;
-          }
-
-          break;
-      }
+      
     };
 
     this.socket.on(this.DATA_EVENT, handleOnData);
